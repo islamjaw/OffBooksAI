@@ -1,3 +1,15 @@
+"""
+RingScout — graph-based fraud ring detection engine.
+
+Two-layer detection:
+  Layer 1 — ML consensus: checks if enough accounts in the cluster
+             were independently flagged by TransactionScorer.
+  Layer 2 — Graph topology: 7 heuristic rules (fan_out, structuring,
+             circular, velocity, shared_metadata, layering, pagerank_anomaly)
+             + any rules added at runtime by DefenseAI.
+
+A cluster must score >= 50 to be flagged as a ring.
+"""
 import sys
 sys.path.append('..')
 import networkx as nx
@@ -11,18 +23,17 @@ except ImportError:
     LOUVAIN_AVAILABLE = False
 
 
-# ------------------------------------------------------------------
-# Rule weights — higher = more severe pattern
-# These determine how much each detected rule adds to suspicion score.
-# ------------------------------------------------------------------
 RULE_WEIGHTS = {
-    'circular':         45,   # wash trading — most serious
-    'layering':         40,   # 3+ hop chain — classic placement evasion
-    'fan_out':          35,   # one source → many recipients
-    'pagerank_anomaly': 35,   # anomalously central collection account
-    'structuring':      30,   # amounts just below $500 threshold
-    'shared_metadata':  25,   # shared device/IP across accounts
-    'velocity':         15,   # high transaction frequency
+    'ml_consensus':     50,   # ML + graph agreement — highest confidence
+    'circular':         45,   # wash trading
+    'layering':         40,   # 3+ hop chain
+    'fan_out':          35,   # 1 source → many recipients
+    'pagerank_anomaly': 35,   # anomalously central node
+    'structuring':      30,   # amounts just below $500
+    'device_anomaly':   28,   # low device trust + high velocity
+    'shared_metadata':  25,   # shared device / IP
+    'location_cluster': 22,   # multiple foreign/mismatched accounts in cluster
+    'velocity':         15,   # high transaction count
 }
 
 
@@ -32,34 +43,20 @@ class RingScout(BaseAgent):
         self.gb            = graph_builder
         self.flagged_rings = []
         self.ring_counter  = 0
+        self.rules         = list(RULE_WEIGHTS.keys())
 
-        # Active rules — DefenseAI appends to this list at runtime
-        self.rules = list(RULE_WEIGHTS.keys())
+        mode = 'Louvain' if LOUVAIN_AVAILABLE else 'connected-components fallback'
+        self.log(f'Initialized — community detection: {mode}')
 
-        if LOUVAIN_AVAILABLE:
-            self.log('Louvain community detection enabled.')
-        else:
-            self.log('python-louvain not found — falling back to connected components. '
-                     'pip install python-louvain')
-
-    # ------------------------------------------------------------------
-    # BaseAgent contract
-    # ------------------------------------------------------------------
-    async def execute(self, input_data=None):
-        # Enrich graph with centrality scores before every scan
+    # ── BaseAgent contract ──────────────────────────────────────────────
+    async def execute(self, input_data=None) -> list:
         self.gb.enrich_graph_features()
-
         rings = self._scan()
-        if rings:
-            self.log(f'Detected {len(rings)} suspicious ring(s).')
-        else:
-            self.log('No suspicious rings detected.')
+        self.log(f'Detected {len(rings)} ring(s).' if rings else 'No rings detected.')
         return rings
 
-    # ------------------------------------------------------------------
-    # Main scan
-    # ------------------------------------------------------------------
-    def _scan(self):
+    # ── Main scan ───────────────────────────────────────────────────────
+    def _scan(self) -> list:
         graph = self.gb.graph
         if graph.number_of_nodes() == 0:
             return []
@@ -67,15 +64,15 @@ class RingScout(BaseAgent):
         undirected = graph.to_undirected()
 
         if LOUVAIN_AVAILABLE and undirected.number_of_edges() > 0:
-            partition    = community_louvain.best_partition(undirected)
+            partition     = community_louvain.best_partition(undirected)
             community_map = {}
             for node, cid in partition.items():
                 community_map.setdefault(cid, set()).add(node)
             components = list(community_map.values())
-            self.log(f'Louvain found {len(components)} communities.')
+            self.log(f'Louvain: {len(components)} communities')
         else:
             components = list(nx.connected_components(undirected))
-            self.log(f'Connected-components found {len(components)} clusters.')
+            self.log(f'Connected-components: {len(components)} clusters')
 
         rings = []
         for component in components:
@@ -84,31 +81,43 @@ class RingScout(BaseAgent):
             score, patterns = self._score_component(component, graph)
             if score >= 50:
                 self.ring_counter += 1
+                high_pr = self.gb.get_high_pagerank_nodes()
                 ring = {
-                    'ring_id':         f'R_{self.ring_counter:03d}',
-                    'accounts':        list(component),
-                    'suspicion_score': score,
-                    'patterns':        patterns,
-                    'total_amount':    self._component_volume(component, graph),
-                    'timeframe_hours': self._component_timeframe(component, graph),
-                    'timestamp':       datetime.utcnow().isoformat(),
-                    'cluster_method':  'louvain' if LOUVAIN_AVAILABLE
-                                       else 'connected_components',
-                    'high_pr_nodes':   self.gb.get_high_pagerank_nodes()
+                    'ring_id':          f'R_{self.ring_counter:03d}',
+                    'accounts':         list(component),
+                    'suspicion_score':  score,
+                    'patterns':         patterns,
+                    'total_amount':     self._component_volume(component, graph),
+                    'timeframe_hours':  self._component_timeframe(component, graph),
+                    'timestamp':        datetime.utcnow().isoformat(),
+                    'cluster_method':   'louvain' if LOUVAIN_AVAILABLE
+                                        else 'connected_components',
+                    'high_pr_nodes':    high_pr,
+                    'node_centrality':  self.gb.get_node_centrality_dict(),
+                    'ml_active':        self._ml_active(component),
+                    'heuristic_score':  score,
                 }
+                # Attach ML probability if available
+                ml_prob = self._cluster_ml_probability(component, graph)
+                if ml_prob is not None:
+                    ring['ml_probability'] = ml_prob
+                    # Blend ML probability into suspicion score
+                    ring['suspicion_score'] = min(
+                        int(score * 0.6 + ml_prob * 100 * 0.4), 100
+                    )
+
                 self.flagged_rings.append(ring)
                 rings.append(ring)
         return rings
 
-    # ------------------------------------------------------------------
-    # Scoring — each active rule contributes its weight
-    # ------------------------------------------------------------------
-    def _score_component(self, component, graph):
+    # ── Scoring ─────────────────────────────────────────────────────────
+    def _score_component(self, component: set, graph: nx.DiGraph):
         score    = 0
         patterns = []
         subgraph = graph.subgraph(component)
 
         checks = {
+            'ml_consensus':     lambda: self._check_ml_consensus(component, graph),
             'fan_out':          lambda: self._check_fan_out(subgraph),
             'structuring':      lambda: self._check_structuring(subgraph),
             'circular':         lambda: self._check_circular(subgraph),
@@ -116,78 +125,78 @@ class RingScout(BaseAgent):
             'shared_metadata':  lambda: self._check_shared_metadata(component),
             'layering':         lambda: self._check_layering(subgraph),
             'pagerank_anomaly': lambda: self._check_pagerank_anomaly(subgraph),
+            'device_anomaly':   lambda: self._check_device_anomaly(component, graph),
+            'location_cluster': lambda: self._check_location_cluster(component, graph),
         }
 
-        for rule_name, check_fn in checks.items():
-            if rule_name not in self.rules:
+        for rule, fn in checks.items():
+            if rule not in self.rules:
                 continue
             try:
-                if check_fn():
-                    weight = RULE_WEIGHTS.get(rule_name, 20)
-                    score += weight
-                    patterns.append(rule_name)
+                if fn():
+                    w = RULE_WEIGHTS.get(rule, 20)
+                    score   += w
+                    patterns.append(rule)
             except Exception as e:
-                self.log(f'Rule {rule_name} error: {e}')
+                self.log(f'Rule {rule} error: {e}')
 
         return min(score, 100), patterns
 
-    # ------------------------------------------------------------------
-    # Original rules
-    # ------------------------------------------------------------------
-    def _check_fan_out(self, subgraph):
-        """One node sends to 3+ different recipients — classic mule pattern."""
-        return any(subgraph.out_degree(n) >= 3 for n in subgraph.nodes())
+    # ── Rule implementations ────────────────────────────────────────────
+    def _check_ml_consensus(self, component: set, graph: nx.DiGraph) -> bool:
+        """3+ accounts in the cluster were ML-flagged (fraud_score > 60)."""
+        count = sum(
+            1 for node in component
+            if graph.nodes[node].get('ml_flagged', False)
+        )
+        return count >= 3
 
-    def _check_structuring(self, subgraph):
-        """Multiple transactions just under $500 — deliberate threshold evasion."""
+    def _check_fan_out(self, sg: nx.DiGraph) -> bool:
+        """One node sends to 3+ different recipients."""
+        return any(sg.out_degree(n) >= 3 for n in sg.nodes())
+
+    def _check_structuring(self, sg: nx.DiGraph) -> bool:
+        """2+ transactions with average amount $400-$499 (below reporting threshold)."""
         suspicious = sum(
-            1 for _, _, d in subgraph.edges(data=True)
+            1 for _, _, d in sg.edges(data=True)
             if 400 <= (d.get('amount', 0) / max(d.get('count', 1), 1)) <= 499
         )
         return suspicious >= 2
 
-    def _check_circular(self, subgraph):
-        """Money flows A→B→…→A — wash trading indicator."""
+    def _check_circular(self, sg: nx.DiGraph) -> bool:
+        """Any directed cycle (wash trading / A→B→…→A)."""
         try:
-            return len(list(nx.simple_cycles(subgraph))) > 0
+            return len(list(nx.simple_cycles(sg))) > 0
         except Exception:
             return False
 
-    def _check_velocity(self, subgraph):
-        """High transaction count with multiple distinct senders."""
-        total_txns     = sum(d.get('count', 1) for _, _, d in subgraph.edges(data=True))
-        distinct_senders = sum(1 for n in subgraph.nodes() if subgraph.out_degree(n) > 0)
-        return total_txns >= 4 and distinct_senders >= 2
+    def _check_velocity(self, sg: nx.DiGraph) -> bool:
+        """4+ total transactions with 2+ distinct senders."""
+        total    = sum(d.get('count', 1) for _, _, d in sg.edges(data=True))
+        senders  = sum(1 for n in sg.nodes() if sg.out_degree(n) > 0)
+        return total >= 4 and senders >= 2
 
-    def _check_shared_metadata(self, component):
-        """Multiple accounts sharing the same device or IP."""
+    def _check_shared_metadata(self, component: set) -> bool:
+        """2+ accounts share the same device fingerprint or IP."""
         meta    = self.gb.account_metadata
         devices = [meta.get(a, {}).get('device') for a in component
                    if meta.get(a, {}).get('device')]
-        ips     = [meta.get(a, {}).get('ip')     for a in component
+        ips     = [meta.get(a, {}).get('ip') for a in component
                    if meta.get(a, {}).get('ip')]
-        return (len(devices) != len(set(devices)) and len(devices) > 1) or \
-               (len(ips)     != len(set(ips))     and len(ips)     > 1)
+        dev_dup = len(devices) > 1 and len(set(devices)) < len(devices)
+        ip_dup  = len(ips)     > 1 and len(set(ips))     < len(ips)
+        return dev_dup or ip_dup
 
-    # ------------------------------------------------------------------
-    # NEW rules
-    # ------------------------------------------------------------------
-    def _check_layering(self, subgraph):
-        """
-        Layering: money passes through 3+ hops before reaching destination.
-        FATF Typology R.15 — creates audit trail distance between source
-        and ultimate destination. Two or more such paths in the subgraph
-        is a strong indicator of deliberate obfuscation.
-        """
+    def _check_layering(self, sg: nx.DiGraph) -> bool:
+        """2+ paths of length >= 3 (classic placement-layering-integration chain)."""
         long_paths = 0
-        nodes = list(subgraph.nodes())
+        nodes = list(sg.nodes())
         for src in nodes:
             for dst in nodes:
                 if src == dst:
                     continue
                 try:
-                    path_len = nx.shortest_path_length(subgraph, src, dst)
-                    if path_len >= 3:
+                    if nx.shortest_path_length(sg, src, dst) >= 3:
                         long_paths += 1
                         if long_paths >= 2:
                             return True
@@ -195,41 +204,68 @@ class RingScout(BaseAgent):
                     continue
         return False
 
-    def _check_pagerank_anomaly(self, subgraph):
-        """
-        PageRank anomaly: one node is anomalously central — 3× the mean.
-        Indicates a collection/aggregator account at the heart of the ring.
-        Only meaningful with 3+ nodes (trivially true with 2).
-        """
-        if subgraph.number_of_nodes() < 3:
+    def _check_pagerank_anomaly(self, sg: nx.DiGraph) -> bool:
+        """One node is 3× more central than the cluster mean (collection account)."""
+        if sg.number_of_nodes() < 3:
             return False
         try:
-            pr     = nx.pagerank(subgraph, alpha=0.85, max_iter=200)
-            values = list(pr.values())
-            mean   = sum(values) / len(values)
-            return mean > 0 and any(v > mean * 3.0 for v in values)
+            pr     = nx.pagerank(sg, alpha=0.85, max_iter=200)
+            vals   = list(pr.values())
+            mean   = sum(vals) / len(vals)
+            return mean > 0 and any(v > mean * 3.0 for v in vals)
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # Dynamic rule injection from DefenseAI
-    # ------------------------------------------------------------------
-    def add_rule(self, rule_name, weight=25):
+    def _check_device_anomaly(self, component: set, graph: nx.DiGraph) -> bool:
         """
-        Called by DefenseAI to extend detection coverage at runtime.
-        Accepts an optional weight; defaults to 25 if not provided.
+        Multiple accounts with low device trust score (<40) AND high velocity (>5).
+        Consistent with scripted / automated fraud tools.
         """
+        count = sum(
+            1 for node in component
+            if (graph.nodes[node].get('avg_device_trust', 100) < 40 and
+                graph.nodes[node].get('max_velocity',       0) > 5)
+        )
+        return count >= 2
+
+    def _check_location_cluster(self, component: set, graph: nx.DiGraph) -> bool:
+        """
+        3+ accounts in the cluster have location mismatches or foreign transactions.
+        Organized fraud rings often operate from a single geographic location
+        targeting cards registered elsewhere.
+        """
+        count = sum(
+            1 for node in component
+            if (graph.nodes[node].get('location_mismatch_count', 0) > 0 or
+                graph.nodes[node].get('foreign_count',            0) > 0)
+        )
+        return count >= 3
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+    def _cluster_ml_probability(self, component: set, graph: nx.DiGraph):
+        """Average ML fraud probability across accounts that have one."""
+        scores = [
+            graph.nodes[n].get('fraud_score', 0) / 100.0
+            for n in component
+            if graph.nodes[n].get('ml_flagged', False)
+        ]
+        return round(sum(scores) / len(scores), 3) if scores else None
+
+    def _ml_active(self, component: set) -> bool:
+        return any(
+            self.gb.graph.nodes[n].get('fraud_score', 0) > 0
+            for n in component
+        )
+
+    def _component_volume(self, component: set, graph: nx.DiGraph) -> float:
+        sg = graph.subgraph(component)
+        return round(sum(d.get('amount', 0) for _, _, d in sg.edges(data=True)), 2)
+
+    def _component_timeframe(self, component: set, graph: nx.DiGraph) -> float:
+        return 1.0   # placeholder — real timestamps need parsing
+
+    def add_rule(self, rule_name: str, weight: int = 25):
         if rule_name not in self.rules:
             self.rules.append(rule_name)
             RULE_WEIGHTS[rule_name] = weight
-            self.log(f'New rule added: {rule_name} (weight={weight})')
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-    def _component_volume(self, component, graph):
-        sg = graph.subgraph(component)
-        return sum(d.get('amount', 0) for _, _, d in sg.edges(data=True))
-
-    def _component_timeframe(self, component, graph):
-        return 1.0
+            self.log(f'New rule: {rule_name} (weight={weight})')
