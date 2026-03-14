@@ -40,7 +40,7 @@ class DefenseAI(BaseAgent):
         rule_name = adaptation.get('rule_name', '')
         weight    = adaptation.get('weight', 25)
         if rule_name:
-            self.ring_scout.add_rule(rule_name, weight=weight)
+            self.ring_scout.add_rule(rule_name, weight=weight, rule_def=adaptation)
 
         self.adaptations.append(adaptation)
         return adaptation

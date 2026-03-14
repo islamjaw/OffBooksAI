@@ -43,6 +43,7 @@ class RingScout(BaseAgent):
         self.gb            = graph_builder
         self.flagged_rings = []
         self.ring_counter  = 0
+        self._dynamic_rules = []
         self.rules         = list(RULE_WEIGHTS.keys())
 
         mode = 'Louvain' if LOUVAIN_AVAILABLE else 'connected-components fallback'
@@ -128,6 +129,16 @@ class RingScout(BaseAgent):
             'device_anomaly':   lambda: self._check_device_anomaly(component, graph),
             'location_cluster': lambda: self._check_location_cluster(component, graph),
         }
+        # Evaluate dynamic rules injected by DefenseAI
+        for dyn_rule in self.rules:
+            if dyn_rule in checks:
+                continue  # already handled above
+            try:
+                if self._check_dynamic_rule(dyn_rule, component, subgraph):
+                    score += RULE_WEIGHTS.get(dyn_rule, 25)
+                    patterns.append(dyn_rule)
+            except Exception as e:
+                self.log(f'Dynamic rule {dyn_rule} error: {e}')
 
         for rule, fn in checks.items():
             if rule not in self.rules:
@@ -205,16 +216,18 @@ class RingScout(BaseAgent):
         return False
 
     def _check_pagerank_anomaly(self, sg: nx.DiGraph) -> bool:
-        """One node is 3× more central than the cluster mean (collection account)."""
+        """
+        One node is anomalously central — 3× the cluster mean.
+        Uses global PageRank computed by GraphBuilder.enrich_graph_features(),
+        not a local recalculation on the tiny subgraph.
+        """
         if sg.number_of_nodes() < 3:
             return False
-        try:
-            pr     = nx.pagerank(sg, alpha=0.85, max_iter=200)
-            vals   = list(pr.values())
-            mean   = sum(vals) / len(vals)
-            return mean > 0 and any(v > mean * 3.0 for v in vals)
-        except Exception:
+        pr_values = [self.gb.graph.nodes[n].get('pagerank', 0.0) for n in sg.nodes()]
+        if not pr_values:
             return False
+        mean = sum(pr_values) / len(pr_values)
+        return mean > 0 and any(v > mean * 3.0 for v in pr_values)
 
     def _check_device_anomaly(self, component: set, graph: nx.DiGraph) -> bool:
         """
@@ -264,8 +277,47 @@ class RingScout(BaseAgent):
     def _component_timeframe(self, component: set, graph: nx.DiGraph) -> float:
         return 1.0   # placeholder — real timestamps need parsing
 
-    def add_rule(self, rule_name: str, weight: int = 25):
+    def _check_dynamic_rule(self, rule_name: str, component: set, subgraph) -> bool:
+        rule_def = next(
+            (a for a in self._dynamic_rules if a.get('rule_name') == rule_name), None
+        )
+        if not rule_def:
+            return False
+        prop      = rule_def.get('graph_property', '')
+        threshold = rule_def.get('threshold', '')
+        try:
+            if 'betweenness' in prop:
+                bc     = nx.betweenness_centrality(subgraph)
+                vals   = list(bc.values())
+                cutoff = float(''.join(c for c in threshold if c.isdigit() or c == '.') or '0.4')
+                return any(v > cutoff for v in vals)
+            if 'out_degree' in prop or 'fan' in prop:
+                n = int(''.join(c for c in threshold if c.isdigit()) or '4')
+                return any(subgraph.out_degree(nd) >= n for nd in subgraph.nodes())
+            if 'path_length' in prop or 'layering' in prop:
+                n = int(''.join(c for c in threshold if c.isdigit()) or '4')
+                for s in subgraph.nodes():
+                    for t in subgraph.nodes():
+                        if s == t: continue
+                        try:
+                            if nx.shortest_path_length(subgraph, s, t) >= n:
+                                return True
+                        except (nx.NetworkXNoPath, nx.NodeNotFound):
+                            pass
+        except Exception as e:
+            self.log(f'Dynamic rule {rule_name} eval error: {e}')
+        return False
+    
+    # ------------------------------------------------------------------
+    # Dynamic rule injection from DefenseAI
+    # ------------------------------------------------------------------
+    def add_rule(self, rule_name: str, weight: int = 25, rule_def: dict = None):
+        """
+        Called by DefenseAI to extend detection coverage at runtime.
+        """
         if rule_name not in self.rules:
             self.rules.append(rule_name)
             RULE_WEIGHTS[rule_name] = weight
-            self.log(f'New rule: {rule_name} (weight={weight})')
+            if rule_def:
+                self._dynamic_rules.append(rule_def)
+            self.log(f'New rule added: {rule_name} (weight={weight})')
