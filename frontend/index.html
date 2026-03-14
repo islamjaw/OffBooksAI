@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SyndicateAI — Adversarial Fraud Detection</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:        #080b0f;
+    --panel:     #0d1117;
+    --border:    #1a2332;
+    --border2:   #243044;
+    --red:       #ff2d55;
+    --red-dim:   #7a1428;
+    --blue:      #00c8ff;
+    --blue-dim:  #0a3d52;
+    --green:     #00ff88;
+    --green-dim: #0a3d22;
+    --amber:     #ffaa00;
+    --amber-dim: #3d2900;
+    --grey:      #8899aa;
+    --text:      #ccd6e8;
+    --mono:      'Share Tech Mono', monospace;
+    --head:      'Barlow Condensed', sans-serif;
+    --body:      'Barlow', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── HEADER ─────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 56px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 10;
+  }
+
+  .logo {
+    font-family: var(--head);
+    font-weight: 900;
+    font-size: 22px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #fff;
+  }
+  .logo span { color: var(--red); }
+
+  .header-stats {
+    display: flex;
+    gap: 32px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .stat-pill {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .stat-pill .val {
+    font-size: 20px;
+    font-family: var(--head);
+    font-weight: 700;
+    line-height: 1;
+  }
+  .stat-pill .lbl {
+    color: var(--grey);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .stat-pill.red .val  { color: var(--red); }
+  .stat-pill.blue .val { color: var(--blue); }
+  .stat-pill.grn .val  { color: var(--green); }
+  .stat-pill.amb .val  { color: var(--amber); }
+
+  .header-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  /* ── BUTTONS ────────────────────────────────────────── */
+  btn, .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 16px;
+    border-radius: 3px;
+    border: 1px solid;
+    font-family: var(--head);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: transparent;
+  }
+  .btn-red   { border-color: var(--red);   color: var(--red); }
+  .btn-blue  { border-color: var(--blue);  color: var(--blue); }
+  .btn-green { border-color: var(--green); color: var(--green); }
+  .btn-grey  { border-color: var(--border2); color: var(--grey); }
+
+  .btn-red:hover   { background: var(--red);   color: #fff; }
+  .btn-blue:hover  { background: var(--blue);  color: #000; }
+  .btn-green:hover { background: var(--green); color: #000; }
+  .btn-grey:hover  { background: var(--border); color: var(--text); }
+
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .diff-select {
+    background: var(--panel);
+    border: 1px solid var(--border2);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  /* ── MAIN LAYOUT ────────────────────────────────────── */
+  .arena {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: 1fr 220px;
+    gap: 1px;
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .panel {
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .panel-title {
+    font-family: var(--head);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--grey);
+  }
+
+  .panel-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 2px;
+    border: 1px solid;
+  }
+  .badge-red   { border-color: var(--red-dim);   color: var(--red);   background: rgba(255,45,85,0.08); }
+  .badge-blue  { border-color: var(--blue-dim);  color: var(--blue);  background: rgba(0,200,255,0.08); }
+  .badge-green { border-color: var(--green-dim); color: var(--green); background: rgba(0,255,136,0.08); }
+  .badge-grey  { border-color: var(--border2);   color: var(--grey);  background: transparent; }
+
+  /* ── GRAPH PANEL ────────────────────────────────────── */
+  #graph-panel {
+    grid-row: 1 / 3;
+    position: relative;
+  }
+
+  #cy {
+    flex: 1;
+    width: 100%;
+  }
+
+  .graph-overlay {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    display: flex;
+    gap: 16px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--grey);
+    pointer-events: none;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    border: 2px solid;
+  }
+
+  /* ── BATTLE LOG ─────────────────────────────────────── */
+  #log-panel { grid-column: 2; grid-row: 1; }
+
+  #battle-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  #battle-log::-webkit-scrollbar { width: 4px; }
+  #battle-log::-webkit-scrollbar-track { background: transparent; }
+  #battle-log::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .log-entry {
+    display: flex;
+    gap: 10px;
+    padding: 4px 16px;
+    border-left: 2px solid transparent;
+    animation: fadeSlide 0.3s ease;
+  }
+
+  @keyframes fadeSlide {
+    from { opacity: 0; transform: translateX(8px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .log-entry.attack { border-color: var(--red);   background: rgba(255,45,85,0.04); }
+  .log-entry.detect { border-color: var(--blue);  background: rgba(0,200,255,0.04); }
+  .log-entry.evade  { border-color: var(--amber); background: rgba(255,170,0,0.04); }
+  .log-entry.adapt  { border-color: var(--green); background: rgba(0,255,136,0.04); }
+  .log-entry.info   { border-color: transparent; }
+
+  .log-time { color: var(--border2); flex-shrink: 0; }
+  .log-kind {
+    flex-shrink: 0;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 2px;
+    align-self: center;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .log-entry.attack .log-kind { background: var(--red-dim);   color: var(--red);   }
+  .log-entry.detect .log-kind { background: var(--blue-dim);  color: var(--blue);  }
+  .log-entry.evade  .log-kind { background: var(--amber-dim); color: var(--amber); }
+  .log-entry.adapt  .log-kind { background: var(--green-dim); color: var(--green); }
+  .log-entry.info   .log-kind { background: var(--border);    color: var(--grey);  }
+
+  .log-msg { color: var(--text); word-break: break-word; }
+
+  /* ── REPORT PANEL ───────────────────────────────────── */
+  #report-panel { grid-column: 2; grid-row: 2; }
+
+  #report-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--grey);
+    white-space: pre-wrap;
+  }
+
+  #report-content::-webkit-scrollbar { width: 4px; }
+  #report-content::-webkit-scrollbar-track { background: transparent; }
+  #report-content::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  #report-content.active { color: var(--text); }
+
+  .cursor-blink {
+    display: inline-block;
+    width: 7px; height: 13px;
+    background: var(--blue);
+    animation: blink 0.8s step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 1px;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+
+  /* ── ROUND FLASH ────────────────────────────────────── */
+  .round-flash {
+    position: fixed;
+    top: 56px; left: 0; right: 0;
+    padding: 8px 24px;
+    font-family: var(--head);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    z-index: 100;
+    animation: flashIn 0.2s ease, flashOut 0.4s ease 2s forwards;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .round-flash.detected {
+    background: rgba(0,200,255,0.15);
+    border-bottom: 1px solid var(--blue);
+    color: var(--blue);
+  }
+
+  .round-flash.evaded {
+    background: rgba(255,170,0,0.15);
+    border-bottom: 1px solid var(--amber);
+    color: var(--amber);
+  }
+
+  @keyframes flashIn  { from { opacity:0; transform:translateY(-8px) } to { opacity:1; transform:translateY(0) } }
+  @keyframes flashOut { from { opacity:1 } to { opacity:0; pointer-events:none } }
+
+  /* ── RULES TICKER ───────────────────────────────────── */
+  .rules-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 28px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow: hidden;
+    z-index: 10;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  .rules-label {
+    flex-shrink: 0;
+    padding: 0 12px;
+    color: var(--grey);
+    border-right: 1px solid var(--border);
+    height: 100%;
+    display: flex;
+    align-items: center;
+    letter-spacing: 0.1em;
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+
+  .rules-list {
+    display: flex;
+    gap: 8px;
+    padding: 0 12px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  .rule-tag {
+    padding: 2px 8px;
+    border-radius: 2px;
+    border: 1px solid var(--border2);
+    color: var(--grey);
+    font-size: 10px;
+    white-space: nowrap;
+    transition: all 0.3s;
+  }
+
+  .rule-tag.new {
+    border-color: var(--green);
+    color: var(--green);
+    background: var(--green-dim);
+    animation: ruleNew 1s ease;
+  }
+
+  @keyframes ruleNew {
+    0%   { transform: scale(1.2); box-shadow: 0 0 12px var(--green); }
+    100% { transform: scale(1); box-shadow: none; }
+  }
+
+  /* ── IDLE STATE ─────────────────────────────────────── */
+  .idle-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    pointer-events: none;
+  }
+
+  .idle-title {
+    font-family: var(--head);
+    font-weight: 900;
+    font-size: 48px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--border2);
+    line-height: 1;
+  }
+
+  .idle-sub {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--border2);
+    letter-spacing: 0.1em;
+  }
+
+  /* ── LOADING ────────────────────────────────────────── */
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid var(--border2);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    display: none;
+  }
+
+  .btn.loading .spinner { display: block; }
+  .btn.loading .btn-text { display: none; }
+
+  @keyframes spin { to { transform: rotate(360deg) } }
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ──────────────────────────────────────────────── -->
+<header>
+  <div class="logo">Syndicate<span>AI</span></div>
+
+  <div class="header-stats">
+    <div class="stat-pill red">
+      <div class="val" id="stat-attacks">0</div>
+      <div class="lbl">Attacks</div>
+    </div>
+    <div class="stat-pill blue">
+      <div class="val" id="stat-detections">0</div>
+      <div class="lbl">Detected</div>
+    </div>
+    <div class="stat-pill amb">
+      <div class="val" id="stat-evasions">0</div>
+      <div class="lbl">Evaded</div>
+    </div>
+    <div class="stat-pill grn">
+      <div class="val" id="stat-rules">5</div>
+      <div class="lbl">Rules</div>
+    </div>
+    <div class="stat-pill" style="color:var(--grey)">
+      <div class="val" id="stat-noise" style="color:var(--grey);font-size:16px">0</div>
+      <div class="lbl">Legit Txns</div>
+    </div>
+  </div>
+
+  <div class="header-controls">
+    <select class="diff-select" id="difficulty">
+      <option value="1">Difficulty 1 — Fan-out</option>
+      <option value="2">Difficulty 2 — Structuring</option>
+      <option value="3">Difficulty 3 — Circular</option>
+      <option value="4">Difficulty 4 — Layered</option>
+      <option value="5">Difficulty 5 — Geographic</option>
+    </select>
+    <button class="btn btn-red" id="btn-attack" onclick="triggerRound()">
+      <div class="spinner"></div>
+      <span class="btn-text">⚡ Launch Attack</span>
+    </button>
+    <button class="btn btn-green" id="btn-auto" onclick="toggleAuto()">
+      <span class="btn-text" id="auto-label">▶ Auto Battle</span>
+    </button>
+    <button class="btn btn-grey" onclick="resetArena()">↺ Reset</button>
+  </div>
+</header>
+
+<!-- ── ARENA ───────────────────────────────────────────────── -->
+<div class="arena">
+
+  <!-- Graph -->
+  <div class="panel" id="graph-panel">
+    <div class="panel-header">
+      <span class="panel-title">Transaction Network</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="panel-badge badge-grey" id="graph-node-count">0 nodes</span>
+        <span class="panel-badge badge-grey" id="graph-edge-count">0 edges</span>
+      </div>
+    </div>
+    <div id="cy"></div>
+    <div class="idle-overlay" id="idle-overlay">
+      <div class="idle-title">Arena</div>
+      <div class="idle-sub">Launch an attack to begin</div>
+    </div>
+    <div class="graph-overlay">
+      <div class="legend-item">
+        <div class="legend-dot" style="border-color:#8899aa;background:rgba(136,153,170,0.2)"></div>
+        Legitimate
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="border-color:#ff2d55;background:rgba(255,45,85,0.3)"></div>
+        Suspicious
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="border-color:#00c8ff;background:rgba(0,200,255,0.3)"></div>
+        Flagged Ring
+      </div>
+    </div>
+  </div>
+
+  <!-- Battle Log -->
+  <div class="panel" id="log-panel">
+    <div class="panel-header">
+      <span class="panel-title">Battle Log</span>
+      <span class="panel-badge badge-red" id="round-badge">ROUND 0</span>
+    </div>
+    <div id="battle-log">
+      <div class="log-entry info">
+        <span class="log-time">--:--:--</span>
+        <span class="log-kind">SYS</span>
+        <span class="log-msg">System online. Awaiting attack.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Investigation Report -->
+  <div class="panel" id="report-panel">
+    <div class="panel-header">
+      <span class="panel-title">Investigation Report</span>
+      <span class="panel-badge badge-blue" id="report-badge">STANDBY</span>
+    </div>
+    <div id="report-content">Awaiting detection event...</div>
+  </div>
+
+</div>
+
+<!-- Rules ticker -->
+<div class="rules-bar">
+  <div class="rules-label">Active Rules</div>
+  <div class="rules-list" id="rules-list"></div>
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+let autoRunning = false;
+let autoInterval = null;
+let logSeen = 0;
+let cy = null;
+let knownRules = new Set();
+
+// ── Cytoscape init ──────────────────────────────────────────
+function initCytoscape() {
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    style: [
+      {
+        selector: 'node',
+        style: {
+          'background-color': 'rgba(136,153,170,0.15)',
+          'border-color': '#445566',
+          'border-width': 1.5,
+          'width': 28, 'height': 28,
+          'label': 'data(label)',
+          'color': '#556677',
+          'font-size': 9,
+          'font-family': 'Share Tech Mono',
+          'text-valign': 'bottom',
+          'text-margin-y': 4,
+          'text-halign': 'center',
+          'transition-property': 'background-color, border-color, border-width, width, height',
+          'transition-duration': '0.4s'
+        }
+      },
+      {
+        selector: 'node[?suspicious]',
+        style: {
+          'background-color': 'rgba(255,45,85,0.25)',
+          'border-color': '#ff2d55',
+          'border-width': 2,
+          'color': '#ff6688',
+          'width': 34, 'height': 34,
+        }
+      },
+      {
+        selector: 'node[?flagged]',
+        style: {
+          'background-color': 'rgba(0,200,255,0.25)',
+          'border-color': '#00c8ff',
+          'border-width': 2.5,
+          'color': '#00c8ff',
+          'width': 38, 'height': 38,
+        }
+      },
+      {
+        selector: 'edge',
+        style: {
+          'width': 1.5,
+          'line-color': '#1a2332',
+          'target-arrow-color': '#1a2332',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'arrow-scale': 0.8,
+          'transition-property': 'line-color, target-arrow-color, width',
+          'transition-duration': '0.4s'
+        }
+      },
+      {
+        selector: 'edge[?fraud]',
+        style: {
+          'line-color': '#7a1428',
+          'target-arrow-color': '#ff2d55',
+          'width': 2.5,
+        }
+      }
+    ],
+    layout: { name: 'cose', animate: true, animationDuration: 600, padding: 30 },
+    userZoomingEnabled: true,
+    userPanningEnabled: true,
+    minZoom: 0.3,
+    maxZoom: 4
+  });
+}
+
+// ── Graph update ────────────────────────────────────────────
+function updateGraph(cyData, flaggedAccounts) {
+  if (!cy) return;
+  const flagged = new Set(flaggedAccounts || []);
+
+  const existingNodes = new Set(cy.nodes().map(n => n.id()));
+  const existingEdges = new Set(cy.edges().map(e => e.id()));
+
+  // Add new nodes
+  cyData.nodes.forEach(n => {
+    if (!existingNodes.has(n.data.id)) {
+      cy.add({ group: 'nodes', data: n.data });
+    } else {
+      cy.getElementById(n.data.id).data(n.data);
+    }
+    // Update styling data
+    const node = cy.getElementById(n.data.id);
+    node.data('suspicious', n.data.suspicious || false);
+    node.data('flagged', flagged.has(n.data.id));
+  });
+
+  // Add new edges
+  cyData.edges.forEach(e => {
+    if (!existingEdges.has(e.data.id)) {
+      try { cy.add({ group: 'edges', data: e.data }); } catch(err) {}
+    }
+  });
+
+  // Re-layout only if graph changed
+  if (cyData.nodes.length > existingNodes.size) {
+    cy.layout({
+      name: 'cose',
+      animate: true,
+      animationDuration: 500,
+      fit: true,
+      padding: 30,
+      randomize: false
+    }).run();
+  }
+
+  // Update counts
+  document.getElementById('graph-node-count').textContent = `${cy.nodes().length} nodes`;
+  document.getElementById('graph-edge-count').textContent = `${cy.edges().length} edges`;
+
+  // Hide idle overlay once we have nodes
+  if (cy.nodes().length > 0) {
+    document.getElementById('idle-overlay').style.display = 'none';
+  }
+}
+
+// ── Battle log ──────────────────────────────────────────────
+function appendLog(entry) {
+  const log = document.getElementById('battle-log');
+  const div = document.createElement('div');
+  div.className = `log-entry ${entry.kind}`;
+
+  const kindLabels = { attack:'ATK', detect:'DET', evade:'EVD', adapt:'ADP', info:'SYS' };
+  div.innerHTML = `
+    <span class="log-time">${entry.time}</span>
+    <span class="log-kind">${kindLabels[entry.kind] || 'SYS'}</span>
+    <span class="log-msg">${entry.message}</span>
+  `;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Round flash banner ──────────────────────────────────────
+function showFlash(outcome, message) {
+  document.querySelectorAll('.round-flash').forEach(el => el.remove());
+  const div = document.createElement('div');
+  div.className = `round-flash ${outcome}`;
+  const icon = outcome === 'detected' ? '🔵 DETECTED' : '🟠 EVADED';
+  div.innerHTML = `<strong>${icon}</strong> — ${message}`;
+  document.body.appendChild(div);
+  setTimeout(() => div.remove(), 2600);
+}
+
+// ── Stream investigation report ─────────────────────────────
+async function streamReport(ringId) {
+  const el = document.getElementById('report-content');
+  const badge = document.getElementById('report-badge');
+  el.className = 'active';
+  el.textContent = '';
+  badge.textContent = 'STREAMING';
+  badge.className = 'panel-badge badge-blue';
+
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor-blink';
+  el.appendChild(cursor);
+
+  try {
+    const es = new EventSource(`${API}/stream/report/${ringId}`);
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.done) {
+        es.close();
+        cursor.remove();
+        badge.textContent = 'COMPLETE';
+        badge.className = 'panel-badge badge-green';
+        return;
+      }
+      if (data.chunk) {
+        el.insertBefore(document.createTextNode(data.chunk), cursor);
+        el.scrollTop = el.scrollHeight;
+      }
+    };
+    es.onerror = () => { es.close(); cursor.remove(); };
+  } catch(err) {
+    el.textContent = 'Report stream unavailable.';
+  }
+}
+
+// ── Update rules bar ────────────────────────────────────────
+function updateRules(rules) {
+  const container = document.getElementById('rules-list');
+  rules.forEach(rule => {
+    if (!knownRules.has(rule)) {
+      knownRules.add(rule);
+      const tag = document.createElement('div');
+      tag.className = 'rule-tag new';
+      tag.textContent = rule.replace(/_/g, ' ');
+      tag.id = `rule-${rule}`;
+      container.appendChild(tag);
+      setTimeout(() => tag.classList.remove('new'), 1200);
+    }
+  });
+  document.getElementById('stat-rules').textContent = rules.length;
+}
+
+// ── Stats polling ────────────────────────────────────────────
+async function pollStats() {
+  try {
+    const res = await fetch(`${API}/stats`);
+    const data = await res.json();
+    document.getElementById('stat-attacks').textContent    = data.attacks_launched || 0;
+    document.getElementById('stat-detections').textContent = data.detections || 0;
+    document.getElementById('stat-evasions').textContent   = data.evasions || 0;
+    document.getElementById('stat-noise').textContent      = data.noise_tx_count || 0;
+    document.getElementById('round-badge').textContent     = `ROUND ${data.round || 0}`;
+    if (data.active_rules) updateRules(data.active_rules);
+  } catch(err) {}
+}
+
+// ── Graph polling ────────────────────────────────────────────
+async function pollGraph() {
+  try {
+    const res = await fetch(`${API}/graph`);
+    const data = await res.json();
+    updateGraph(data, []);
+  } catch(err) {}
+}
+
+// ── Trigger one round ────────────────────────────────────────
+async function triggerRound() {
+  const btn = document.getElementById('btn-attack');
+  btn.classList.add('loading');
+  btn.disabled = true;
+
+  const difficulty = parseInt(document.getElementById('difficulty').value);
+
+  try {
+    const res = await fetch(`${API}/round`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ difficulty })
+    });
+    const data = await res.json();
+
+    // Update graph with fraud highlights
+    if (data.graph) {
+      const flagged = data.ring ? data.ring.accounts : [];
+      updateGraph(data.graph, flagged);
+    }
+
+    if (data.outcome === 'detected') {
+      showFlash('detected', `Ring ${data.ring.ring_id} flagged — score ${data.ring.suspicion_score}/100`);
+      if (data.ring) streamReport(data.ring.ring_id);
+    } else {
+      showFlash('evaded', `Attack evaded. DefenseAI adapting: ${data.adaptation?.rule_name || '...'}`);
+      const el = document.getElementById('report-content');
+      el.className = '';
+      el.textContent = `⚠ EVASION DETECTED\n\nAttack: ${data.attack?.strategy}\n\nNew rule added: ${data.adaptation?.rule_name}\n${data.adaptation?.description}`;
+      document.getElementById('report-badge').textContent = 'ADAPTING';
+      document.getElementById('report-badge').className = 'panel-badge badge-grey';
+    }
+
+    await pollStats();
+
+  } catch(err) {
+    appendLog({ time: '--:--:--', kind: 'info', message: `Error: ${err.message}` });
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+
+// ── Auto battle ──────────────────────────────────────────────
+function toggleAuto() {
+  autoRunning = !autoRunning;
+  const label = document.getElementById('auto-label');
+  const btn   = document.getElementById('btn-auto');
+
+  if (autoRunning) {
+    label.textContent = '⏹ Stop Auto';
+    btn.className = 'btn btn-grey';
+    fetch(`${API}/battle/start`, { method: 'POST' });
+    // also connect to SSE log stream
+    startLogStream();
+  } else {
+    label.textContent = '▶ Auto Battle';
+    btn.className = 'btn btn-green';
+    fetch(`${API}/battle/stop`, { method: 'POST' });
+  }
+}
+
+// ── SSE log stream ────────────────────────────────────────────
+let logES = null;
+function startLogStream() {
+  if (logES) { logES.close(); }
+  logES = new EventSource(`${API}/stream/battle`);
+  logES.onmessage = (e) => {
+    const entry = JSON.parse(e.data);
+    appendLog(entry);
+    // If a detection happened, refresh graph
+    if (entry.kind === 'detect' || entry.kind === 'evade') {
+      pollGraph();
+      pollStats();
+    }
+  };
+}
+
+// ── Reset ─────────────────────────────────────────────────────
+async function resetArena() {
+  if (autoRunning) toggleAuto();
+  await fetch(`${API}/reset`, { method: 'POST' });
+  if (cy) cy.elements().remove();
+  document.getElementById('battle-log').innerHTML = `
+    <div class="log-entry info">
+      <span class="log-time">--:--:--</span>
+      <span class="log-kind">SYS</span>
+      <span class="log-msg">Arena reset. Awaiting attack.</span>
+    </div>`;
+  document.getElementById('report-content').textContent = 'Awaiting detection event...';
+  document.getElementById('report-content').className = '';
+  document.getElementById('report-badge').textContent = 'STANDBY';
+  document.getElementById('report-badge').className = 'panel-badge badge-blue';
+  document.getElementById('idle-overlay').style.display = 'flex';
+  document.getElementById('rules-list').innerHTML = '';
+  knownRules.clear();
+  logSeen = 0;
+  await pollStats();
+}
+
+// ── Boot ──────────────────────────────────────────────────────
+initCytoscape();
+// ── Node click tooltip ──────────────────────────────────────
+const tooltip = document.createElement('div');
+tooltip.style.cssText = `
+  position: fixed; display: none; z-index: 999;
+  background: #0d1117; border: 1px solid #243044;
+  padding: 10px 14px; border-radius: 4px;
+  font-family: 'Share Tech Mono', monospace; font-size: 11px;
+  color: #ccd6e8; pointer-events: none;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  max-width: 220px; line-height: 1.8;
+`;
+document.body.appendChild(tooltip);
+
+cy.on('tap', 'node', function(evt) {
+  const node = evt.target;
+  const data = node.data();
+
+  // Use the original event's page coordinates for accurate placement
+  const originalEvent = evt.originalEvent;
+  const pageX = originalEvent.pageX || originalEvent.touches?.[0]?.pageX || 0;
+  const pageY = originalEvent.pageY || originalEvent.touches?.[0]?.pageY || 0;
+
+  // Collect all edges involving this node
+  const outEdges = cy.edges(`[source = "${data.id}"]`);
+  const inEdges  = cy.edges(`[target = "${data.id}"]`);
+
+  let edgeLines = '';
+  outEdges.forEach(e => {
+    const amt = parseFloat(e.data('amount') || 0);
+    edgeLines += `<div style="color:#ff6688">▶ ${e.data('target')} &nbsp;<span style="color:#fff">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>`;
+  });
+  inEdges.forEach(e => {
+    const amt = parseFloat(e.data('amount') || 0);
+    edgeLines += `<div style="color:#00c8ff">◀ ${e.data('source')} &nbsp;<span style="color:#fff">$${amt.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>`;
+  });
+
+  const sent = parseFloat(data.total_sent || 0);
+  const rcvd = parseFloat(data.total_received || 0);
+
+  tooltip.innerHTML = `
+    <div style="color:#fff;font-size:13px;margin-bottom:6px;border-bottom:1px solid #1a2332;padding-bottom:6px;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:0.05em">
+      ${data.id}
+    </div>
+    <div style="color:#8899aa;margin-bottom:4px">
+      Sent: <span style="color:#ff6688">$${sent.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+      &nbsp;·&nbsp;
+      Rcvd: <span style="color:#00c8ff">$${rcvd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+    </div>
+    <div style="color:#8899aa;margin-bottom:8px">Tx count: ${data.tx_count||0}</div>
+    <div style="border-top:1px solid #1a2332;padding-top:6px;max-height:160px;overflow-y:auto">
+      ${edgeLines || '<div style="color:#445566">No connections</div>'}
+    </div>
+  `;
+
+  // Position tooltip — flip left if near right edge
+  const tipW = 230;
+  const left = (pageX + tipW + 20 > window.innerWidth) ? pageX - tipW - 8 : pageX + 16;
+  const top  = Math.min(pageY - 20, window.innerHeight - 250);
+
+  tooltip.style.display = 'block';
+  tooltip.style.left = left + 'px';
+  tooltip.style.top  = top  + 'px';
+});
+
+cy.on('tap', function(evt) {
+  if (evt.target === cy) tooltip.style.display = 'none';
+});
+pollStats();
+pollGraph();
+setInterval(pollStats, 3000);
+setInterval(pollGraph, 4000);  // keep graph in sync with noise traffic
+</script>
+</body>
+</html>
