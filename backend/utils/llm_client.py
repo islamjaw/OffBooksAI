@@ -53,12 +53,21 @@ class LLMClient:
             self._init_openai()
 
     def _init_openai(self):
-        """Fallback: OpenAI-compatible endpoint (HuggingFace GPT-OSS-120B)."""
-        self._oai_client = AsyncOpenAI(
-            api_key=os.getenv('OPENAI_API_KEY', 'test'),
-            base_url=os.getenv('OPENAI_BASE_URL')
-        )
-        self._oai_model = os.getenv('MODEL_NAME', 'openai/gpt-oss-120b')
+        """Two HuggingFace endpoints — tries primary first, falls back to secondary."""
+        api_key = os.getenv('OPENAI_API_KEY', 'test')
+
+        primary_url   = os.getenv('OPENAI_BASE_URL',
+                                   'https://vjioo4r1vyvcozuj.us-east-2.aws.endpoints.huggingface.cloud/v1')
+        secondary_url = os.getenv('OPENAI_BASE_URL_2',
+                                   'https://qyt7893blb71b5d3.us-east-2.aws.endpoints.huggingface.cloud/v1')
+
+        self._oai_primary   = AsyncOpenAI(api_key=api_key, base_url=primary_url)
+        self._oai_secondary = AsyncOpenAI(api_key=api_key, base_url=secondary_url)
+        self._oai_model     = os.getenv('MODEL_NAME', 'openai/gpt-oss-120b')
+
+        print(f'[LLMClient] Primary endpoint:   {primary_url}')
+        print(f'[LLMClient] Secondary endpoint: {secondary_url}')
+        print(f'[LLMClient] Model: {self._oai_model}')
 
     # ── Primary generate call ─────────────────────────────────────────
     async def generate(self, prompt: str, system_prompt: str = 'You are a helpful assistant.',
@@ -126,40 +135,72 @@ class LLMClient:
     # ── OpenAI-compatible internals ───────────────────────────────────
     async def _oai_generate(self, prompt: str, system_prompt: str,
                              max_tokens: int, temperature: float) -> str:
-        try:
-            response = await self._oai_client.chat.completions.create(
-                model=self._oai_model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user',   'content': prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f'Error: {str(e)}'
+        """Try primary endpoint first; fall back to secondary on any error."""
+        last_error = 'unknown error'
+        for attempt, client in enumerate([self._oai_primary, self._oai_secondary]):
+            endpoint_label = 'primary' if attempt == 0 else 'secondary'
+            try:
+                response = await client.chat.completions.create(
+                    model=self._oai_model,
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user',   'content': prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    timeout=30,
+                )
+                content = response.choices[0].message.content
+                if content is None:
+                    finish = response.choices[0].finish_reason
+                    print(f'[LLMClient] {endpoint_label} returned None content. finish_reason={finish}')
+                    print(f'[LLMClient] Full choice: {response.choices[0]}')
+                    raise ValueError(f'API returned null content (finish_reason={finish})')
+                if attempt > 0:
+                    print(f'[LLMClient] Secondary endpoint succeeded.')
+                return content
+            except Exception as e:
+                last_error = f'{e.__class__.__name__}: {str(e)[:300]}'
+                print(f'[LLMClient] {endpoint_label} endpoint FAILED')
+                print(f'[LLMClient]   type: {e.__class__.__name__}')
+                print(f'[LLMClient]   detail: {str(e)[:500]}')
+                if attempt == 0:
+                    print(f'[LLMClient] Retrying with secondary endpoint…')
+        # Both endpoints failed — guaranteed string return so callers never get None
+        print(f'[LLMClient] Both endpoints exhausted. Last error: {last_error}')
+        return f'Error: {last_error}'
 
     async def _oai_stream(self, prompt: str, system_prompt: str, max_tokens: int):
-        try:
-            stream = await self._oai_client.chat.completions.create(
-                model=self._oai_model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user',   'content': prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=0.7,
-                stream=True
-            )
-            async for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-        except Exception as e:
-            yield f'Error: {str(e)}'
+        for attempt, client in enumerate([self._oai_primary, self._oai_secondary]):
+            endpoint_label = 'primary' if attempt == 0 else 'secondary'
+            try:
+                stream = await client.chat.completions.create(
+                    model=self._oai_model,
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user',   'content': prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=0.7,
+                    stream=True,
+                    timeout=30,
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta.content
+                    if delta is not None:
+                        yield delta
+                return  # success — don't try secondary
+            except Exception as e:
+                print(f'[LLMClient] stream {endpoint_label} failed: {e.__class__.__name__}')
+                if attempt == 1:
+                    yield f'Error: {str(e)}'
 
     # ── JSON parser ───────────────────────────────────────────────────
     def _parse_json(self, response: str) -> dict:
+        if not response:
+            print(f'[LLMClient] _parse_json received empty/None response')
+            return {'error': 'Empty response from LLM', 'raw': response}
+
         text = response.strip()
 
         # Strip markdown fences

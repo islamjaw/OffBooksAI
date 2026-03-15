@@ -58,7 +58,9 @@ class InvestigationAgent(BaseAgent):
             + typology_context
         )
 
-        account_list  = ', '.join(accounts[:8]) + (f' and {len(accounts)-8} more' if len(accounts)>8 else '')
+        # Use plain account count rather than raw IDs — keeps report readable
+        n_accounts    = len(accounts)
+        account_label = f'{n_accounts} accounts'
         pattern_list  = '\n'.join(f'  - {e}' for e in pattern_explanations) if pattern_explanations else '  - Suspicious transaction patterns detected'
         ml_line       = f'Machine learning model confidence: {ml_prob:.0%}' if ml_prob else ''
         real_line     = 'NOTE: These are REAL fraudulent transactions from the Kaggle Credit Card Fraud Dataset — not simulated.' if is_real else ''
@@ -66,14 +68,14 @@ class InvestigationAgent(BaseAgent):
         hub_line      = ''
         if high_pr_nodes:
             top = high_pr_nodes[0]
-            hub_line = f'Central account: {top["account"]} (acting as money hub — {top["multiplier"]}x more central than average)'
+            hub_line = f'One account was acting as the central collection point — receiving money from {top["multiplier"]}x more sources than a normal account.'
 
         prompt = (
             f'Write a plain-English fraud alert report for a bank executive.\n\n'
             f'DETECTION FACTS:\n'
             f'Ring ID: {ring_data.get("ring_id")}\n'
             f'Suspicion Score: {score}/100\n'
-            f'Accounts involved: {account_list}\n'
+            f'Number of accounts involved: {account_label}\n'
             f'Total money moved: ${amount:,.2f}\n'
             f'Data source: {source}\n'
             f'{ml_line}\n'
@@ -82,22 +84,24 @@ class InvestigationAgent(BaseAgent):
             f'WHY IT IS SUSPICIOUS:\n{pattern_list}\n\n'
             f'Write the report with these four sections:\n\n'
             f'WHAT HAPPENED\n'
-            f'(2 sentences: what the accounts did and how much money moved)\n\n'
+            f'(2 sentences: what these accounts did and how much money moved. '
+            f'Do NOT mention account ID codes like CUST_001 — just say "the accounts" or give a count.)\n\n'
             f'WHY THIS IS FRAUD\n'
             f'(2-3 sentences: explain each suspicious pattern in plain English, '
             f'like you are explaining to someone who has never heard of money laundering)\n\n'
             f'THE EVIDENCE\n'
-            f'(bullet points: list specific account IDs, amounts, and the ML score if available. '
-            f'Be specific — use the actual numbers)\n\n'
+            f'(bullet points: specific amounts, the ML score if available, and what the pattern looked like. '
+            f'Do NOT use account ID codes — describe the behaviour instead.)\n\n'
             f'WHAT TO DO NOW\n'
             f'(3 specific action items — freeze accounts, file SAR, contact authorities, etc.)\n\n'
-            f'Keep the total under 280 words. Write as if explaining to a smart non-expert.'
+            f'Keep the total under 300 words. Write as if explaining to a smart non-expert. '
+            f'Do not truncate or cut off — write all four sections in full.'
         )
 
         report = await self.llm.generate(
             prompt=prompt,
             system_prompt=system_prompt,
-            max_tokens=450
+            max_tokens=700
         )
 
         self._log_governance(ring_data, report)
